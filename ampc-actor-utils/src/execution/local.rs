@@ -15,6 +15,7 @@ use crate::{
 };
 use eyre::Result;
 use futures::future::join_all;
+use num_traits::identities;
 use std::{
     collections::HashSet,
     sync::{Arc, LazyLock},
@@ -27,6 +28,22 @@ pub fn generate_local_identities() -> Vec<Identity> {
         Identity::from("bob"),
         Identity::from("charlie"),
     ]
+}
+
+pub fn generate_local_identities_5() -> Vec<Identity> {
+    vec![
+        Identity::from("alice"),
+        Identity::from("bob"),
+        Identity::from("charlie"),
+        Identity::from("david"),
+        Identity::from("dealer"),
+    ]
+}
+
+pub fn generate_local_identities_n(num_parties: usize) -> Vec<Identity> {
+    (0..num_parties)
+        .map(|i| Identity::from(format!("party-{i}")))
+        .collect()
 }
 
 static USED_PORTS: LazyLock<Mutex<HashSet<u16>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -64,6 +81,17 @@ impl LocalRuntime {
         for i in 0..num_parties {
             let mut seed = [0_u8; 16];
             seed[0] = i;
+            seeds.push(seed);
+        }
+        LocalRuntime::new_with_network_type(identities, seeds, network_t).await
+    }
+
+    pub async fn mock_setup_n(num_parties: usize, network_t: NetworkType) -> Result<Self> {
+        let identities = generate_local_identities_5();
+        let mut seeds = Vec::new();
+        for i in 0..num_parties {
+            let mut seed = [0_u8; 16];
+            seed[0] = i as u8;
             seeds.push(seed);
         }
         LocalRuntime::new_with_network_type(identities, seeds, network_t).await
@@ -163,8 +191,18 @@ impl LocalRuntime {
             .map(|rt| rt.into_sessions())
     }
 
+    async fn mock_sessions_n(num_parties: usize, network_type: NetworkType) -> Result<Vec<SessionRef>> {
+        Self::mock_setup_n(num_parties, network_type)
+            .await
+            .map(|rt| rt.into_sessions())
+    }
+
     pub async fn mock_sessions_with_channel() -> Result<Vec<SessionRef>> {
         Self::mock_sessions(NetworkType::Local).await
+    }
+
+    pub async fn mock_sessions_with_channel_n(num_parties: usize) -> Result<Vec<SessionRef>> {
+        Self::mock_sessions_n(num_parties, NetworkType::Local).await
     }
 
     pub async fn mock_sessions_with_tcp(
@@ -201,4 +239,58 @@ mod tests {
         }
         jobs.join_all().await;
     }
+
+    #[tokio::test]
+    async fn test_mock_sessions_with_channels_5() {
+        let sessions = LocalRuntime::mock_sessions_with_channel_n(5)
+            .await
+            .unwrap();
+
+        assert_eq!(sessions.len(), 5);
+
+        let expected_identities = vec![
+            Identity::from("alice"),
+            Identity::from("bob"),
+            Identity::from("charlie"),
+            Identity::from("david"),
+            Identity::from("dealer"),
+        ];
+
+        let mut seen_roles = Vec::new();
+
+        for session in sessions {
+            let session = session.lock().await;
+            let network_session = &session.network_session;
+
+            let own_role_idx = network_session.own_role.index();
+            seen_roles.push(own_role_idx);
+
+            // every session must have a consistent view of the roles, identities of all the participating sessions
+            // you are using the iterator of expected identity as role_idx to pick out the corresponding identity from session.network_session
+            for (role_idx, expected_identity) in expected_identities.iter().enumerate() {
+                let actual_identity = network_session
+                    .role_assignments
+                    .get(&Role::new(role_idx))
+                    .unwrap();
+
+                assert_eq!(actual_identity, expected_identity);
+            }
+
+            // checking the other direction, in a given session, identify the own_role and the corresponding own_identity
+            // pick out the corresponding expected_identities via own_role and compare
+            // role -> identity matches the expected identities
+            
+            let own_identity = network_session
+                .role_assignments
+                .get(&Role::new(own_role_idx))
+                .unwrap();
+
+            assert_eq!(own_identity, &expected_identities[own_role_idx]);
+        }
+
+        // make sure every role is participating and appears
+        seen_roles.sort();
+        assert_eq!(seen_roles, vec![0, 1, 2, 3, 4]);
+    }
+
 }
