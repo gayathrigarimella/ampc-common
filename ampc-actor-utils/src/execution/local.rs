@@ -30,6 +30,7 @@ pub fn generate_local_identities() -> Vec<Identity> {
     ]
 }
 
+// changes for 5pc scaffold
 pub fn generate_local_identities_5() -> Vec<Identity> {
     vec![
         Identity::from("alice"),
@@ -40,6 +41,7 @@ pub fn generate_local_identities_5() -> Vec<Identity> {
     ]
 }
 
+// changes for 5pc scaffold
 pub fn generate_local_identities_n(num_parties: usize) -> Vec<Identity> {
     (0..num_parties)
         .map(|i| Identity::from(format!("party-{i}")))
@@ -86,6 +88,7 @@ impl LocalRuntime {
         LocalRuntime::new_with_network_type(identities, seeds, network_t).await
     }
 
+    // changes for 5pc scaffold
     pub async fn mock_setup_n(num_parties: usize, network_t: NetworkType) -> Result<Self> {
         let identities = generate_local_identities_5();
         let mut seeds = Vec::new();
@@ -191,6 +194,7 @@ impl LocalRuntime {
             .map(|rt| rt.into_sessions())
     }
 
+    // changes for 5pc scaffold
     async fn mock_sessions_n(num_parties: usize, network_type: NetworkType) -> Result<Vec<SessionRef>> {
         Self::mock_setup_n(num_parties, network_type)
             .await
@@ -201,6 +205,7 @@ impl LocalRuntime {
         Self::mock_sessions(NetworkType::Local).await
     }
 
+    // changes for 5pc scaffold
     pub async fn mock_sessions_with_channel_n(num_parties: usize) -> Result<Vec<SessionRef>> {
         Self::mock_sessions_n(num_parties, NetworkType::Local).await
     }
@@ -241,6 +246,7 @@ mod tests {
     }
 
     #[tokio::test]
+    // unit testing for 5pc scaffold
     async fn test_mock_sessions_with_channels_5() {
         let sessions = LocalRuntime::mock_sessions_with_channel_n(5)
             .await
