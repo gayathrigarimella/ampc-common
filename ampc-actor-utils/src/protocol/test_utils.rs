@@ -17,6 +17,26 @@ where
     (share1, share2)
 }
 
+pub fn create_single_sharing_additive_4party<R: RngCore, T: IntRing2k>(
+    rng: &mut R,
+    input: T,
+) -> (AdditiveShare<T>, AdditiveShare<T>, AdditiveShare<T>, AdditiveShare<T>)
+where
+    Standard: Distribution<T>,
+{
+    let a = RingElement(rng.gen::<T>());
+    let b = RingElement(rng.gen::<T>());
+    let c = RingElement(rng.gen::<T>());
+    let d = RingElement(input) - a - b - c;
+    
+
+    let share1 = AdditiveShare::new(a);
+    let share2 = AdditiveShare::new(b);
+    let share3 = AdditiveShare::new(c);
+    let share4 = AdditiveShare::new(d);
+    (share1, share2, share3, share4)
+}
+
 pub fn create_single_sharing_replicated<R: RngCore, T: IntRing2k>(
     rng: &mut R,
     input: T,
@@ -67,6 +87,25 @@ impl<T: IntRing2k> LocalShares1DAdditive<T> {
     }
 }
 
+pub struct LocalShares1DAdditive_4party<T:IntRing2k> {
+    pub p0: Vec<AdditiveShare<T>>,
+    pub p1: Vec<AdditiveShare<T>>,
+    pub p2: Vec<AdditiveShare<T>>,
+    pub p3: Vec<AdditiveShare<T>>,
+}
+
+impl<T: IntRing2k> LocalShares1DAdditive_4party<T> {
+    pub fn of_party(&self, party_id: usize) -> &Vec<AdditiveShare<T>> {
+        match party_id {
+            0 => &self.p0,
+            1 => &self.p1,
+            2 => &self.p2,
+            3 => &self.p3,
+            _ => panic!("Invalid party id"),
+        }
+    }
+}
+
 pub fn create_array_sharing_replicated<R: RngCore, T: IntRing2k>(
     rng: &mut R,
     input: &Vec<T>,
@@ -112,5 +151,32 @@ where
         p0: player0,
         p1: player1,
         p2: player2,
+    }
+}
+
+pub fn create_array_sharing_additive_4party<R: RngCore, T: IntRing2k>(
+    rng: &mut R,
+    input: &Vec<T>,
+) -> LocalShares1DAdditive_4party<T>
+where
+    Standard: Distribution<T>,
+{
+    let mut player0 = Vec::new();
+    let mut player1 = Vec::new();
+    let mut player2 = Vec::new();
+    let mut player3 = Vec::new();
+
+    for entry in input {
+        let (a, b, c, d) = create_single_sharing_additive_4party(rng, *entry);
+        player0.push(a);
+        player1.push(b);
+        player2.push(c);
+        player3.push(d);
+    }
+    LocalShares1DAdditive_4party {
+        p0: player0,
+        p1: player1,
+        p2: player2,
+        p3: player3,
     }
 }

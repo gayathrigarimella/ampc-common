@@ -66,7 +66,7 @@ where
         let third_share = !(*overall_bit == first_second_xor);
         (first_share, second_share, third_share)
     });
-
+ 
     match role.index() {
         // Party 0 holds (a0,a2) for every shared value.
         0 => Ok(OfflineRandomSharesReplicated {
@@ -111,7 +111,7 @@ pub struct OfflineRandomSharesAdditive2<T: IntRing2k> {
 
 // sampling an instance of pre-generated randomness used in the protocol for T = u8
 /// Returns the per-party view of precomputed randomness for extract_msb_rand.
-/// Each party gets its additive ABY3 share (a,b) of the same global values.
+/// Each party gets its additive share of the same global values.
 pub fn offline_shares_for_role_additive2<T: IntRing2k>(
     role: &impl Role,
     rng: &mut impl Rng,
@@ -128,7 +128,7 @@ where
             let multiplier = if i == 0 {
                 T::one()
             } else {
-                (T::one() + T::one()).wrapping_shl((i - 1) as u32)
+                (T::one()).wrapping_shl((i) as u32)
             };
             acc + (T::from(*bit) * multiplier)
         });
@@ -213,7 +213,7 @@ pub async fn extract_msb_rand<T: IntRing2k + NetworkInt, K: PrimInt>(
     // get_next_prime(prime_modulus_lower_bound)
 
     // step 1: [r']_k = [r]_k - [r_bit]_1 ^ 2^{k - 1}
-    // convert RingElement<Bit> -> Bit -> Bool -> (via from) T
+    // convert RingElement<Bit> -> Bit -> Bool -> (using from) T
     let v_t: T = T::from(offline.r_bits[0].get_a().convert().convert());
     // safely left-shift by T::K - 1 == bit width - 1 using wrapping_shl
     let scaled_msb_self = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
