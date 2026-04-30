@@ -13,8 +13,6 @@ use eyre::{bail, eyre, Error, Result};
 use tracing::instrument;
 use num_traits::PrimInt;
 
-
-
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn open_additive_share_4party<T: IntRing2k + NetworkInt>(
     session: &mut Session,
@@ -75,7 +73,7 @@ mod tests {
     use num_traits::zero;
     use rand::{Rng, SeedableRng};
     use tokio::task::JoinSet;
-    use crate::{execution::local::LocalRuntime, protocol::{msb_5pc::open_additive_share_4party, test_utils::create_single_sharing_additive_4party}};
+    use crate::{execution::local::LocalRuntime, protocol::{msb_5pc::open_additive_share_4party, test_utils::{create_single_sharing_additive_4party, create_array_sharing_additive_4party}}};
     use crate::execution::player::Role;
     use eyre::{bail, eyre, Error, Result};
 
@@ -92,6 +90,24 @@ mod tests {
             + shares.3.get_value();
 
         assert_eq!(opened.convert(), value);
+    }
+
+     #[test]
+    fn test_create_array_sharing_additive_local_reconstruction() {
+        let mut rng = AesRng::from_entropy();
+        let values: Vec<u32> = (0..10).map(|_| rng.gen::<u32>()).collect();
+
+        let shares = create_array_sharing_additive_4party::<AesRng, u32>(&mut rng, &values);
+
+        for (idx, expected) in values.iter().enumerate() {
+            let opened = shares.of_party(0)[idx].get_value()
+                + shares.of_party(1)[idx].get_value()
+                + shares.of_party(2)[idx].get_value()
+                + shares.of_party(3)[idx].get_value();
+
+            assert_eq!(opened.convert(), *expected);
+        }
+
     }
 
     #[tokio::test]
@@ -132,4 +148,41 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+
+    async fn test_create_array_sharing_additive_4party() -> Result<(), Error> {
+        let mut rng = AesRng::from_entropy();
+        let values: Vec<u32> = (0..20).map(|_| rng.gen::<u32>()).collect();
+        let shares = create_array_sharing_additive_4party::<AesRng, u32>(&mut rng, &values);
+
+        let sessions = LocalRuntime::mock_sessions_with_channel_n(5).await?;
+        let mut join_set = JoinSet::new();
+
+        for idx in 0..4 {
+            let session = sessions[idx].clone();
+            let shares_i = shares.of_party(idx).clone();
+            join_set.spawn(async move {
+                let mut session = session.lock().await;
+                let own_role_idx = session.network_session.own_role.index();
+                open_additive_share_4party(&mut session, &shares_i).await
+
+            });
+        }
+        let opened = join_set
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>,_>>()?;
+
+        assert_eq!(opened.len(), 4);
+        assert_eq!(opened[0], opened[1]);
+        assert_eq!(opened[1], opened[2]);
+        assert_eq!(opened[2], opened[3]);
+
+        for (idx, opened_i) in opened[0].iter().enumerate() {
+            assert_eq!(opened_i, &values[idx]);
+        }
+
+        Ok(())
+    }
 }
