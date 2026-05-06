@@ -466,7 +466,6 @@ impl<T: IntRing2k> AdditiveShare<T> {
             1 => {}
             2 => {}
             3 => {}
-            4 => {}
             _ => unimplemented!(),
         }
     }
@@ -691,6 +690,7 @@ impl<T: PrimInt> AdditiveSharePrime<PrimeElement<T>> {
             0 => self.value += other,
             1 => {}
             2 => {}
+            3 => {}
             _ => unimplemented!(),
         }
     }

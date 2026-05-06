@@ -18,6 +18,14 @@ impl<T: PrimInt> PrimeElement<T> {
         }
     }
 
+     pub fn get_value(self) -> T {
+        self.value
+    }
+
+    pub fn get_modulus(self) -> T {
+        self.modulus
+    }
+
     pub fn zero(modulus: T) -> Self {
         Self {
             modulus,

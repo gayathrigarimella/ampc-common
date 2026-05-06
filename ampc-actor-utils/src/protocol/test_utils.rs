@@ -1,6 +1,11 @@
 use ampc_secret_sharing::{shares::share::AdditiveShare, IntRing2k, ReplicatedShare, RingElement};
 use rand::{Rng, RngCore};
 use rand_distr::{Distribution, Standard};
+use num_traits::PrimInt;
+use ampc_secret_sharing::shares::{
+    primefield::PrimeElement,
+    share::AdditiveSharePrime,
+};
 
 pub fn create_single_sharing_additive<R: RngCore, T: IntRing2k>(
     rng: &mut R,
@@ -37,6 +42,34 @@ where
     (share1, share2, share3, share4)
 }
 
+pub fn create_single_sharing_additive_prime_4party<R, T>(
+    rng: &mut R,
+    input: T,
+    modulus: T,
+) -> (
+    AdditiveSharePrime<PrimeElement<T>>,
+    AdditiveSharePrime<PrimeElement<T>>,
+    AdditiveSharePrime<PrimeElement<T>>,
+    AdditiveSharePrime<PrimeElement<T>>,
+)
+where
+    R: rand::RngCore,
+    T: PrimInt,
+{
+    let a = PrimeElement::<T>::rand(rng, modulus);
+    let b = PrimeElement::<T>::rand(rng, modulus);
+    let c = PrimeElement::<T>::rand(rng, modulus);
+
+    let input = PrimeElement::<T>::new(input, modulus);
+    let d = input - a - b - c;
+
+    (
+        AdditiveSharePrime::new(a),
+        AdditiveSharePrime::new(b),
+        AdditiveSharePrime::new(c),
+        AdditiveSharePrime::new(d),
+    )
+}
 pub fn create_single_sharing_replicated<R: RngCore, T: IntRing2k>(
     rng: &mut R,
     input: T,
@@ -96,6 +129,25 @@ pub struct LocalShares1DAdditive_4party<T:IntRing2k> {
 
 impl<T: IntRing2k> LocalShares1DAdditive_4party<T> {
     pub fn of_party(&self, party_id: usize) -> &Vec<AdditiveShare<T>> {
+        match party_id {
+            0 => &self.p0,
+            1 => &self.p1,
+            2 => &self.p2,
+            3 => &self.p3,
+            _ => panic!("Invalid party id"),
+        }
+    }
+}
+
+pub struct LocalShares1DAdditivePrime_4party<T: PrimInt> {
+    pub p0: Vec<AdditiveSharePrime<PrimeElement<T>>>,
+    pub p1: Vec<AdditiveSharePrime<PrimeElement<T>>>,
+    pub p2: Vec<AdditiveSharePrime<PrimeElement<T>>>,
+    pub p3: Vec<AdditiveSharePrime<PrimeElement<T>>>,
+}
+
+impl<T: PrimInt> LocalShares1DAdditivePrime_4party<T> {
+    pub fn of_party(&self, party_id: usize) -> &Vec<AdditiveSharePrime<PrimeElement<T>>> {
         match party_id {
             0 => &self.p0,
             1 => &self.p1,
@@ -174,6 +226,36 @@ where
         player3.push(d);
     }
     LocalShares1DAdditive_4party {
+        p0: player0,
+        p1: player1,
+        p2: player2,
+        p3: player3,
+    }
+}
+
+pub fn create_array_sharing_additive_prime_4party<R: RngCore, T: PrimInt>(
+    rng: &mut R,
+    input: &Vec<T>,
+    modulus: T,
+) -> LocalShares1DAdditivePrime_4party<T>
+where
+    R: rand::RngCore,
+    T: PrimInt,
+{
+    let mut player0 = Vec::new();
+    let mut player1 = Vec::new();
+    let mut player2 = Vec::new();
+    let mut player3 = Vec::new();
+
+    for entry in input {
+        let (a, b, c, d) =
+            create_single_sharing_additive_prime_4party(rng, *entry, modulus);
+        player0.push(a);
+        player1.push(b);
+        player2.push(c);
+        player3.push(d);
+    }
+    LocalShares1DAdditivePrime_4party {
         p0: player0,
         p1: player1,
         p2: player2,

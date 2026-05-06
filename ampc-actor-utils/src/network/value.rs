@@ -5,6 +5,7 @@ use bytes::BytesMut;
 use eyre::{bail, eyre, Result};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use std::mem::size_of;
+use num_traits::PrimInt;
 
 /// Serialize a vector of RingElements as bytes, using bulk memcpy on little-endian.
 ///
@@ -622,6 +623,53 @@ impl_network_int!(u16, RingElement16, VecRing16);
 impl_network_int!(u32, RingElement32, VecRing32);
 impl_network_int!(u64, RingElement64, VecRing64);
 impl_network_int!(Ring48, RingElement48, VecRing48);
+
+pub trait NetworkPrimeInt: PrimInt {
+    fn new_network_prime_element(element: PrimeElement<Self>) -> NetworkValue;
+    fn new_network_prime_vec(elements: Vec<PrimeElement<Self>>) -> NetworkValue;
+    fn into_prime_vec(value: NetworkValue) -> Result<Vec<PrimeElement<Self>>>;
+}
+
+macro_rules! impl_network_prime_int {
+    ($t:ty, $elem:ident) => {
+        impl NetworkPrimeInt for $t {
+            fn new_network_prime_element(e: PrimeElement<$t>) -> NetworkValue {
+                NetworkValue::$elem(e)
+            }
+
+            fn new_network_prime_vec(v: Vec<PrimeElement<$t>>) -> NetworkValue {
+                NetworkValue::vec_to_network(
+                    v.into_iter()
+                        .map(NetworkValue::$elem)
+                        .collect()
+                )
+            }
+
+            fn into_prime_vec(val: NetworkValue) -> Result<Vec<PrimeElement<$t>>> {
+                match val {
+                    NetworkValue::$elem(e) => Ok(vec![e]),
+                    other => {
+                        let values = NetworkValue::vec_from_network(other)?;
+                        values
+                            .into_iter()
+                            .map(|v| match v {
+                                NetworkValue::$elem(e) => Ok(e),
+                                _ => Err(eyre!(
+                                    "Invalid conversion to Vec<PrimeElement<{}>>",
+                                    stringify!($t)
+                                )),
+                            })
+                            .collect()
+                    }
+                }
+            }
+        }
+    };
+}
+
+impl_network_prime_int!(u8, PrimeElement8);
+impl_network_prime_int!(u16, PrimeElement16);
+impl_network_prime_int!(u32, PrimeElement32);
 
 #[cfg(test)]
 mod tests {
