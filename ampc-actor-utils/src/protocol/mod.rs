@@ -6,6 +6,7 @@ pub mod prf;
 pub mod shuffle;
 pub mod test_utils;
 pub mod msb_5pc;
+pub mod msb_5pc_offline;
 
 // Re-export key types
 pub use prf::{Prf, PrfSeed};
