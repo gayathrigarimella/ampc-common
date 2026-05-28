@@ -53,9 +53,9 @@ where
             };
             acc + (T::from(*bit) * multiplier)
         });
-    let total_value_shares = create_single_sharing_additive(rng, total_value);
+    let total_value_shares = create_single_sharing_additive(rng, total_value, 2);
     let b_bit = rng.gen_bool(0.5);
-    let b_bit_shares = create_single_sharing_additive(rng, T::from(b_bit));
+    let b_bit_shares = create_single_sharing_additive(rng, T::from(b_bit), 2);
     let rand_bit_shares = rand_bits.iter().map(move |overall_bit| {
         let first_share = rng.gen_bool(0.5);
         let second_share = !(*overall_bit == first_share);
@@ -64,18 +64,18 @@ where
 
     match role.index() {
         0 => Ok(OfflineRandomSharesAdditive2 {
-            r: total_value_shares.0,
+            r: total_value_shares[0],
             r_bits: rand_bit_shares
                 .map(|(b0, _)| AdditiveShare::new(RingElement(Bit::new(b0))))
                 .collect(),
-            b_bit: b_bit_shares.0,
+            b_bit: b_bit_shares[0],
         }),
         1 => Ok(OfflineRandomSharesAdditive2 {
-            r: total_value_shares.1,
+            r: total_value_shares[1],
             r_bits: rand_bit_shares
                 .map(|(_, b1)| AdditiveShare::new(RingElement(Bit::new(b1))))
                 .collect(),
-            b_bit: b_bit_shares.1,
+            b_bit: b_bit_shares[1],
         }),
         2 => Ok(OfflineRandomSharesAdditive2 {
             r: AdditiveShare::zero(),
@@ -1093,17 +1093,16 @@ mod tests {
         let expected = value;
 
         // Two-party additive sharing of the bit; dealer/party 2 gets zero.
-        let shares = create_single_sharing_additive::<AesRng, Bit>(&mut rng, value);
+        let shares = create_single_sharing_additive::<AesRng, Bit>(&mut rng, value, 2);
 
         for session in sessions.into_iter() {
             let session = session.clone();
-
+            let shares = shares.clone();
             jobs.spawn(async move {
                 let mut session = session.lock().await;
-
                 let share_i = match session.own_role().index() {
-                    0 => shares.0,
-                    1 => shares.1,
+                    0 => shares[0],
+                    1 => shares[1],
                     2 => AdditiveShare::zero(),
                     _ => {
                         bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]")
@@ -1155,7 +1154,10 @@ mod tests {
             });
         let shares: (Vec<AdditiveShare<Bit>>, Vec<AdditiveShare<Bit>>) = private_values
             .iter()
-            .map(|value| create_single_sharing_additive::<AesRng, Bit>(&mut rng, *value))
+            .map(|value| {
+                let shares = create_single_sharing_additive::<AesRng, Bit>(&mut rng, *value, 2);
+                (shares[0], shares[1])
+            })
             .unzip();
 
         let public_value = rng.gen::<u8>();
@@ -1227,9 +1229,13 @@ mod tests {
             .fold(0_u32, |acc, (index, elem)| {
                 acc + (elem.convert() as u32) * (2_u32.pow(index as u32))
             });
+            
         let shares: (Vec<AdditiveShare<Bit>>, Vec<AdditiveShare<Bit>>) = private_values
             .iter()
-            .map(|value| create_single_sharing_additive::<AesRng, Bit>(&mut rng, *value))
+            .map(|value| {
+                let shares = create_single_sharing_additive::<AesRng, Bit>(&mut rng, *value, 2);
+                (shares[0], shares[1])
+            })
             .unzip();
 
         let public_value = rng.gen::<u32>();

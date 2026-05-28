@@ -184,16 +184,9 @@ where
 mod tests {
     use crate::protocol::msb_5pc_offline::generate_offline_random_shares_additive;
     use aes_prng::AesRng;
-    use ampc_secret_sharing::{
-        shares::{
-            bit::Bit,
-            primefield::PrimeElement,
-            share::{self, AdditiveShare, AdditiveSharePrime},
-        },
-        IntRing2k, RingElement, Role,
-    };
-    use eyre::{bail, Error, Result};
-    use num_traits::{One, PrimInt, Zero};
+    use ampc_secret_sharing::IntRing2k;
+    use eyre::{Error, Result};
+    use num_traits::One;
     use rand::SeedableRng;
 
     #[test]
@@ -208,25 +201,22 @@ mod tests {
         // now, each party generates same bulk and then picks their relevant shares ...
         // g3:: is this reasonable? should we change the way we write this?
         let mut rng0 = base_rng.clone();
-        let mut rng1 = base_rng.clone();
-        let mut rng2 = base_rng.clone();
-        let mut rng3 = base_rng.clone();
 
         let offline_shares =
             generate_offline_random_shares_additive::<u16, u16>(&mut rng0, prime_modulus)?;
 
         // Parties 0, 1, 2, 3 generate their shares using the same bulk randomness generation function
-        let p0 = offline_shares[0].clone().unwrap();
+        let p0 = offline_shares[0].as_ref().unwrap();
 
-        let p1 = offline_shares[1].clone().unwrap();
+        let p1 = offline_shares[1].as_ref().unwrap();
 
-        let p2 = offline_shares[2].clone().unwrap();
+        let p2 = offline_shares[2].as_ref().unwrap();
 
-        let p3 = offline_shares[3].clone().unwrap();
+        let p3 = offline_shares[3].as_ref().unwrap();
 
         // Pick Party 0: check the number of shares in the vectors, should match the log (ring size)
         assert_eq!(p0.r_bits.len(), u16::K);
-        assert_eq!(p0.correlated_bool_prime.unwrap().len(), u16::K);
+        assert_eq!(p0.correlated_bool_prime.as_ref().unwrap().len(), u16::K);
 
         // open the ring element r
         let opened_r = (p0.r + p1.r + p2.r + p3.r).get_value();
@@ -270,17 +260,17 @@ mod tests {
         assert!(opened_b_bit_ring.convert() == 0 || opened_b_bit_ring.convert() == 1);
 
         for idx in 0..u16::K {
-            let opened_bool = p0.correlated_bool_prime.unwrap().clone()[idx]
+            let opened_bool = p0.correlated_bool_prime.as_ref().unwrap()[idx]
                 .bit_mask
                 .convert()
-                ^ p1.correlated_bool_prime.unwrap().clone()[idx]
+                ^ p1.correlated_bool_prime.as_ref().unwrap()[idx]
                     .bit_mask
                     .convert();
 
-            let opened_prime = p0.correlated_bool_prime.unwrap().clone()[idx]
+            let opened_prime = p0.correlated_bool_prime.as_ref().unwrap()[idx]
                 .prime_share
                 .get_value()
-                + p1.correlated_bool_prime.unwrap().clone()[idx]
+                + p1.correlated_bool_prime.as_ref().unwrap()[idx]
                     .prime_share
                     .get_value();
 
@@ -292,8 +282,7 @@ mod tests {
             // println!("Opened correlated prime {}: bool = {}, prime = {}", idx, opened_bool, opened_prime.get_value());
         }
 
-        let mut rng4 = base_rng.clone();
-        let p4 = offline_shares[4].clone();
+        let p4 = offline_shares[4].as_ref();
 
         assert!(p4.is_none());
 
