@@ -14,93 +14,14 @@ use rand_distr::{Distribution, Standard};
 use std::ops::{Neg, SubAssign};
 use tracing::instrument;
 
-use crate::protocol::{
-    ops::open_ring,
-    test_utils::{create_single_sharing_additive, create_single_sharing_replicated},
-};
+use crate::protocol::
+    test_utils::{create_single_sharing_additive,}
+;
 use crate::{
     execution::session::{NetworkSession, Session, SessionHandles},
     network::value::{NetworkInt, NetworkValue},
     protocol::{prf::PrfRng, Prf, PrfSeed},
 };
-// Precomputed offline randomness for extract_msb_rand: a share<T> element 'r', its per-bit boolean
-// shares (bit7..bit0), and a shared random bit 'b_bit' embedded as a Share<T> share.
-
-// TODO: generalize r_bits to work for any type T; make it Vec<ReplicatedShare<Bit>> maybe?
-pub struct OfflineRandomSharesReplicated<T: IntRing2k> {
-    r: ReplicatedShare<T>,
-    r_bits: Vec<ReplicatedShare<Bit>>, // r_7, ..., r_0
-    b_bit: ReplicatedShare<T>,
-}
-
-// sampling an instance of pre-generated randomness used in the protocol for T = u8
-/// Returns the per-party view of precomputed randomness for extract_msb_rand.
-/// Each party gets its replicated ABY3 share (a,b) of the same global values.
-pub fn offline_shares_for_role_replicated<T: IntRing2k>(
-    role: &impl Role,
-    rng: &mut impl Rng,
-) -> Result<OfflineRandomSharesReplicated<T>, Error>
-where
-    Standard: Distribution<T>,
-{
-    let rand_bits: Vec<bool> = (0..T::K).map(|_| rng.gen_bool(0.5)).collect();
-    let total_value = rand_bits
-        .iter()
-        .rev()
-        .enumerate()
-        .fold(T::zero(), |acc, (i, bit)| {
-            let multiplier = if i == 0 {
-                T::one()
-            } else {
-                (T::one() + T::one()).wrapping_shl((i - 1) as u32)
-            };
-            acc + (T::from(*bit) * multiplier)
-        });
-    let total_value_shares = create_single_sharing_replicated(rng, total_value);
-    let b_bit = rng.gen_bool(0.5);
-    let b_bit_shares = create_single_sharing_replicated(rng, T::from(b_bit));
-    let rand_bit_shares = rand_bits.iter().map(move |overall_bit| {
-        let first_share = rng.gen_bool(0.5);
-        let second_share = rng.gen_bool(0.5);
-        let first_second_xor = !(first_share == second_share);
-        let third_share = !(*overall_bit == first_second_xor);
-        (first_share, second_share, third_share)
-    });
- 
-    match role.index() {
-        // Party 0 holds (a0,a2) for every shared value.
-        0 => Ok(OfflineRandomSharesReplicated {
-            r: total_value_shares.0,
-            r_bits: rand_bit_shares
-                .map(|(b0, _, b2)| {
-                    ReplicatedShare::new(RingElement(Bit::new(b0)), RingElement(Bit::new(b2)))
-                })
-                .collect(),
-            b_bit: b_bit_shares.0,
-        }),
-        // Party 1 holds (a1,a0).
-        1 => Ok(OfflineRandomSharesReplicated {
-            r: total_value_shares.1,
-            r_bits: rand_bit_shares
-                .map(|(b0, b1, _)| {
-                    ReplicatedShare::new(RingElement(Bit::new(b1)), RingElement(Bit::new(b0)))
-                })
-                .collect(),
-            b_bit: b_bit_shares.1,
-        }),
-        // Party 2 holds (a2,a1).
-        2 => Ok(OfflineRandomSharesReplicated {
-            r: total_value_shares.2,
-            r_bits: rand_bit_shares
-                .map(|(_, b1, b2)| {
-                    ReplicatedShare::new(RingElement(Bit::new(b2)), RingElement(Bit::new(b1)))
-                })
-                .collect(),
-            b_bit: b_bit_shares.2,
-        }),
-        _ => bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]"),
-    }
-}
 
 #[derive(Debug)]
 pub struct OfflineRandomSharesAdditive2<T: IntRing2k> {
@@ -196,105 +117,6 @@ pub async fn setup_shared_seed_dealer_model(
     };
 
     Ok(shared_seed)
-}
-
-// TODO: implement the struct OfflineRandomShares with a new function that instantiates a new instance for type T
-// can we just instantiate a new instance within the MSB protocol??
-
-pub async fn extract_msb_rand<T: IntRing2k + NetworkInt, K: PrimInt>(
-    session: &mut Session,
-    x: ReplicatedShare<T>,
-    offline: &OfflineRandomSharesReplicated<T>,
-    prime_modulus: K,
-) -> Result<ReplicatedShare<T>, Error> {
-    let mut rng = AesRng::from_random_seed();
-    // TODO
-    // let prime_modulus_lower_bound = 2 * T::K + 1;
-    // get_next_prime(prime_modulus_lower_bound)
-
-    // step 1: [r']_k = [r]_k - [r_bit]_1 ^ 2^{k - 1}
-    // convert RingElement<Bit> -> Bit -> Bool -> (using from) T
-    let v_t: T = T::from(offline.r_bits[0].get_a().convert().convert());
-    // safely left-shift by T::K - 1 == bit width - 1 using wrapping_shl
-    let scaled_msb_self = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
-
-    let v_t: T = T::from(offline.r_bits[0].get_b().convert().convert());
-    let scaled_msb_prev = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
-
-    let r_prime_self: RingElement<T> = offline.r.get_a() - scaled_msb_self;
-    let r_prime_prev: RingElement<T> = offline.r.get_b() - scaled_msb_prev;
-    let r_prime_share = ReplicatedShare::new(r_prime_self, r_prime_prev);
-
-    // step 2: c' = (x + r) mod 2^{k - 1}
-
-    // mask input 'x:AdditiveShare<T>' with pre-generated random ring element 'r:AdditiveShare<T>'
-    let c_share: ReplicatedShare<T> = x + offline.r;
-    let c: T = open_ring(session, std::slice::from_ref(&c_share)).await?[0];
-    let mask: T = T::one()
-        .wrapping_shl((T::K - 1) as u32)
-        .wrapping_sub(&T::one());
-    let c_prime: T = c & mask;
-
-    // step 3: compute bitLT using c_prime and replicated bits r_bits[7], ..., r_bits[1]
-    // convert the replicated bits to additive shares of bits
-    let mut r_bits_additive = Vec::with_capacity(offline.r_bits.len() - 1);
-    for rep_bit_share in offline.r_bits.iter().skip(1) {
-        r_bits_additive.push(rep_to_add2(session, *rep_bit_share).await?);
-    }
-
-    // sample a prf
-    let prf_seed = PrfSeed::from([rng.gen::<u8>(); 16]);
-    // TODO: compute bitlt using additive shares and prf seed -> output is additive share of bitLT
-    let bit_lt_share_add2 = bitlt(
-        session,
-        r_bits_additive.clone(),
-        c_prime,
-        r_bits_additive.len(),
-        prf_seed,
-        prime_modulus,
-    )
-    .await?;
-
-    // TODO convert the additive share of bitlt back to replicated share of bitlt (for nowww))
-    let bit_lt_share = add2_to_rep_binary(session, bit_lt_share_add2).await?;
-    // step 4: [a']_k = 2^{k-1} [u]_1 + c' - [r']_k, [d]_k = [a]_k - [a']_k
-
-    // 4a. computing scaled 2^{k - 1} * [u]_1
-    // convert RingElement<Bit> -> Bit -> Bool -> (via from) T
-    let v_t: T = T::from(bit_lt_share.get_a().convert().convert());
-    // safely left-shift by T::K - 1 == bit width - 1 using wrapping_shl
-    let scaled_bit_lt_self = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
-
-    let v_t: T = T::from(bit_lt_share.get_b().convert().convert());
-    // safely left-shift by T::K - 1 == bit width - 1 using wrapping_shl
-    let scaled_bit_lt_prev = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
-
-    let scaled_bit_lt = ReplicatedShare::new(scaled_bit_lt_self, scaled_bit_lt_prev);
-    let mut x_prime = scaled_bit_lt;
-    x_prime.add_assign_const_role(c_prime, session.own_role());
-    x_prime.sub_assign(r_prime_share);
-
-    let d_share = x - x_prime;
-
-    // step 5: computing MSB using b_bit and d_share
-    // 5a. scale b_bit by 2^{k - 1}
-    let two_pow_k_minus_1: T = T::one().wrapping_shl((T::K - 1) as u32);
-    let mut b_msb_share = offline.b_bit;
-    b_msb_share = b_msb_share * two_pow_k_minus_1;
-    let e_share = d_share + b_msb_share;
-    // e_share: ReplicatedShare<T>
-    let e_open: T = open_ring(session, &[e_share]).await?[0];
-    // MSB as bool
-    let e_msb_bool: bool = ((e_open >> (T::K - 1)) & T::one()) == T::one();
-
-    let msb = if e_msb_bool {
-        let mut neg_b_bit = -offline.b_bit;
-        neg_b_bit.add_assign_const_role(T::one(), session.own_role());
-        neg_b_bit
-    } else {
-        offline.b_bit
-    };
-    Ok(msb)
 }
 
 pub async fn extract_msb_rand_additive<T: IntRing2k + NetworkInt, K: PrimInt>(
@@ -1123,7 +945,6 @@ mod tests {
         add2_to_rep_binary, bitlt, extract_msb_rand_additive, offline_shares_for_role_additive2,
         open_additive_share, open_additive_share_bit, open_additive_share_u8, rep_to_add2,
     };
-    use crate::protocol::ops::open_ring;
     use crate::protocol::test_utils::{
         create_array_sharing_additive, create_single_sharing_additive,
         create_single_sharing_replicated,
@@ -1133,149 +954,18 @@ mod tests {
         execution::{local::LocalRuntime, session::SessionHandles},
         protocol::{
             binary::open_bin,
-            msb_preprocessing::{extract_msb_rand, offline_shares_for_role_replicated},
-            test_utils::create_array_sharing_replicated,
         },
     };
     use aes_prng::AesRng;
     use ampc_secret_sharing::shares::share::AdditiveShare;
     use ampc_secret_sharing::shares::vecshare::VecShareAdditive;
-    use ampc_secret_sharing::shares::{bit::Bit, VecShareReplicated};
+    use ampc_secret_sharing::shares::{bit::Bit};
     use ampc_secret_sharing::RingElement;
     use eyre::{bail, Error, Result};
     use rand::{Rng, SeedableRng};
     use rand_distr::{Distribution, Standard};
     use tokio::task::JoinSet;
 
-    async fn test_extract_msb_rand_u8() -> Result<()> {
-        let modulus = 19;
-        let mut rng = AesRng::from_random_seed();
-        let offline_rng = AesRng::from_random_seed();
-        let len = 4usize;
-
-        // Random cleartext values + expected MSB bits
-        let ints: Vec<u8> = (0..len).map(|_| rng.gen::<u8>()).collect();
-        //let ints: Vec<u8> = vec![241u8, 128u8, 34u8, 255u8, 11u8];
-
-        let expected: Vec<u8> = ints.iter().map(|x| (*x >> 7) & 1).collect();
-
-        println!(
-            "Cleartext values: {:?} Expected Values: {:?}",
-            ints, expected
-        );
-        // Secret-share inputs across 3 parties
-        let shares = create_array_sharing_replicated(&mut rng, &ints);
-
-        let sessions = LocalRuntime::mock_sessions_with_channel().await?;
-        let mut jobs = JoinSet::new();
-
-        for (i, session) in sessions.into_iter().enumerate() {
-            let session = session.clone();
-            let shares_i = VecShareReplicated::new_vec(shares.of_party(i).clone());
-            let mut offline_rng = offline_rng.clone();
-
-            jobs.spawn(async move {
-                let mut session = session.lock().await;
-
-                // pick up the pre-generated randomness
-                let offline =
-                    offline_shares_for_role_replicated(&session.own_role(), &mut offline_rng)?;
-
-                // Run extract_msb_rand for each shared input
-                let mut out = Vec::with_capacity(shares_i.len());
-                for x in shares_i.shares().iter().cloned() {
-                    out.push(extract_msb_rand::<u8, u8>(&mut session, x, &offline, modulus).await?);
-                }
-
-                // Open result bits
-                open_ring(&mut session, &out).await
-            });
-        }
-
-        let opened = jobs
-            .join_all()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
-
-        assert_eq!(opened.len(), 3);
-        assert_eq!(opened[0], opened[1]);
-        assert_eq!(opened[1], opened[2]);
-        assert_eq!(opened[0], expected);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_extract_msb_rand() -> Result<()> {
-        test_extract_msb_rand_u8().await
-    }
-
-    async fn test_extract_msb_rand_u32() -> Result<()> {
-        let modulus = 67;
-        let mut rng = AesRng::from_random_seed();
-        let offline_rng = AesRng::from_random_seed();
-        let len = 100usize;
-
-        // Random cleartext values + expected MSB bits
-        let ints: Vec<u32> = (0..len).map(|_| rng.gen::<u32>()).collect();
-        //let ints: Vec<u8> = vec![241u8, 128u8, 34u8, 255u8, 11u8];
-
-        let expected: Vec<u32> = ints.iter().map(|x| (*x >> 31) & 1).collect();
-
-        println!(
-            "Cleartext values: {:?} Expected Values: {:?}",
-            ints, expected
-        );
-        // Secret-share inputs across 3 parties
-        let shares = create_array_sharing_replicated(&mut rng, &ints);
-
-        let sessions = LocalRuntime::mock_sessions_with_channel().await?;
-        let mut jobs = JoinSet::new();
-
-        for (i, session) in sessions.into_iter().enumerate() {
-            let session = session.clone();
-            let shares_i = VecShareReplicated::new_vec(shares.of_party(i).clone());
-            let mut offline_rng = offline_rng.clone();
-
-            jobs.spawn(async move {
-                let mut session = session.lock().await;
-
-                // pick up the pre-generated randomness
-                let offline =
-                    offline_shares_for_role_replicated(&session.own_role(), &mut offline_rng)?;
-
-                // Run extract_msb_rand for each shared input
-                let mut out = Vec::with_capacity(shares_i.len());
-                for x in shares_i.shares().iter().cloned() {
-                    out.push(
-                        extract_msb_rand::<u32, u16>(&mut session, x, &offline, modulus).await?,
-                    );
-                }
-
-                // Open result bits
-                open_ring(&mut session, &out).await
-            });
-        }
-
-        let opened = jobs
-            .join_all()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
-
-        assert_eq!(opened.len(), 3);
-        assert_eq!(opened[0], opened[1]);
-        assert_eq!(opened[1], opened[2]);
-        assert_eq!(opened[0], expected);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_extract_msb_rand_2() -> Result<()> {
-        test_extract_msb_rand_u32().await
-    }
 
     async fn test_extract_msb_rand_u32_additive() -> Result<()> {
         let modulus = 67;
