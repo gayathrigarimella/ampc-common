@@ -14,8 +14,8 @@ use std::ops::{Neg, SubAssign};
 
 use crate::protocol::{
     msb_5pc_helpers::{
-        bin_to_primefield16_4party, open_additive_share_4party, primefield16_to_bin_one_hot,
-        send_binary_shares_to_dealer, send_prime16_shares_to_dealer,
+        bin_to_primefield16_4party, open_additive_share_4party, primefield16_to_bin_one_hot_4party,
+        send_binary_shares_to_dealer_4party, send_prime16_shares_to_dealer_4party,
         setup_shared_seed_dealer_model_4party,
     },
     msb_5pc_offline::OfflineRandomSharesAdditive4,
@@ -158,7 +158,7 @@ pub async fn bitlt<T: IntRing2k + NetworkInt, K: PrimInt>(
     };
 
     // Communication round 1: Send shares to dealer to convert to prime field
-    let dealer_shares = send_binary_shares_to_dealer(session, &scaled_shares).await?;
+    let dealer_shares = send_binary_shares_to_dealer_4party(session, &scaled_shares).await?;
     // Communication round 2: Receive prime field shares from dealer
     let mut prime_shares_received =
         bin_to_primefield16_4party(session, dealer_shares, prime_modulus.to_u16().unwrap()).await?;
@@ -219,9 +219,9 @@ pub async fn bitlt<T: IntRing2k + NetworkInt, K: PrimInt>(
     };
 
     // Communication round 3: Send prime shares to dealer to convert to binary
-    let dealer_values = send_prime16_shares_to_dealer(session, &shifted_shares).await?;
+    let dealer_values = send_prime16_shares_to_dealer_4party(session, &shifted_shares).await?;
     // Communication round 4: Receive binary shares of one hot vector from dealer
-    let one_hot_shifted_shares = primefield16_to_bin_one_hot(session, dealer_values).await?;
+    let one_hot_shifted_shares = primefield16_to_bin_one_hot_4party(session, dealer_values).await?;
 
     if let Some(rand_shift) = rand_shift {
         let mut one_hot_shares = Vec::with_capacity(one_hot_shifted_shares.len());

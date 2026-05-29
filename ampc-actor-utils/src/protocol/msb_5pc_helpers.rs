@@ -10,7 +10,7 @@ use crate::{
     },
 };
 use aes_prng::AesRng;
-use ampc_secret_sharing::shares::{bit::Bit, share::AdditiveSharePrime};
+use ampc_secret_sharing::shares::{self, bit::Bit, share::AdditiveSharePrime};
 use ampc_secret_sharing::{shares::primefield::PrimeElement, RingElement};
 use ampc_secret_sharing::{shares::share::AdditiveShare, IntRing2k};
 use eyre::{bail, eyre, Error, Result};
@@ -250,7 +250,7 @@ pub async fn bin_to_primefield16_4party(
     Ok(shares)
 }
 
-pub async fn primefield16_to_bin_one_hot(
+pub async fn primefield16_to_bin_one_hot_4party(
     session: &mut Session,
     values: Vec<PrimeElement<u16>>,
 ) -> Result<Vec<AdditiveShare<Bit>>, Error> {
@@ -328,7 +328,7 @@ pub async fn primefield16_to_bin_one_hot(
 }
 
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-pub async fn send_binary_shares_to_dealer(
+pub async fn send_binary_shares_to_dealer_4party(
     session: &mut Session,
     shares: &Vec<AdditiveShare<Bit>>,
 ) -> Result<Vec<RingElement<Bit>>, Error> {
@@ -345,73 +345,51 @@ pub async fn send_binary_shares_to_dealer(
     };
 
     let values_received = match network.own_role.index() {
-        0 => {
-            network.send_prev(message.clone()).await?;
+        0 | 1 | 2 | 3 => {
+            network.send_to_role(Role::new(4), message.clone()).await?;
             vec![]
         }
-        1 => {
-            network.send_next(message.clone()).await?;
-            vec![]
-        }
-        2 => {
-            let share_from_previous = network
-                .receive_prev()
-                .await
-                .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
-            let values_from_previous = if shares.len() == 1 {
-                match share_from_previous {
-                    NetworkValue::RingElementBit(message) => Ok(vec![message]),
-                    _ => Err(eyre!("Wrong value type is received in open_bin operation")),
-                }
-            } else {
-                match NetworkValue::vec_from_network(share_from_previous) {
-                    Ok(v) => {
-                        if matches!(v[0], NetworkValue::RingElementBit(_)) {
-                            Ok(v.into_iter()
-                                .map(|x| match x {
-                                    NetworkValue::RingElementBit(message) => message,
-                                    _ => unreachable!(),
-                                })
-                                .collect())
-                        } else {
-                            Err(eyre!("Wrong value type is received in open_bin operation"))
-                        }
+        4 => {
+            let mut shares_from_parties = Vec::new();
+            for role_idx in 0..4 {
+                let share = network
+                    .receive_from_role(Role::new(role_idx))
+                    .await
+                    .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
+                let values = if shares.len() == 1 {
+                    match share {
+                        NetworkValue::RingElementBit(message) => Ok(vec![message]),
+                        _ => Err(eyre!("Wrong value type is received in open_bin operation")),
                     }
-                    Err(e) => Err(eyre!("Error in receiving in open_bin operation: {}", e)),
-                }
-            }?;
-            let share_from_next = network
-                .receive_next()
-                .await
-                .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
-            let values_from_next = if shares.len() == 1 {
-                match share_from_next {
-                    NetworkValue::RingElementBit(message) => Ok(vec![message]),
-                    _ => Err(eyre!("Wrong value type is received in open_bin operation")),
-                }
-            } else {
-                match NetworkValue::vec_from_network(share_from_next) {
-                    Ok(v) => {
-                        if matches!(v[0], NetworkValue::RingElementBit(_)) {
-                            Ok(v.into_iter()
-                                .map(|x| match x {
-                                    NetworkValue::RingElementBit(message) => message,
-                                    _ => unreachable!(),
-                                })
-                                .collect())
-                        } else {
-                            Err(eyre!("Wrong value type is received in open_bin operation"))
+                } else {
+                    match NetworkValue::vec_from_network(share) {
+                        Ok(v) => {
+                            if matches!(v[0], NetworkValue::RingElementBit(_)) {
+                                Ok(v.into_iter()
+                                    .map(|x| match x {
+                                        NetworkValue::RingElementBit(message) => message,
+                                        _ => unreachable!(),
+                                    })
+                                    .collect())
+                            } else {
+                                Err(eyre!("Wrong value type is received in open_bin operation"))
+                            }
                         }
+                        Err(e) => Err(eyre!("Error in receiving in open_bin operation: {}", e)),
                     }
-                    Err(e) => Err(eyre!("Error in receiving in open_bin operation: {}", e)),
-                }
-            }?;
+                }?;
+                shares_from_parties.push(values);
+            }
 
-            values_from_previous
-                .iter()
-                .zip(values_from_next.iter())
-                .map(|(prev, next)| *prev ^ next)
-                .collect()
+            shares_from_parties
+                .into_iter()
+                .reduce(|acc, elem| {
+                    acc.iter()
+                        .zip(elem)
+                        .map(|(prev, curr)| *prev ^ curr)
+                        .collect()
+                })
+                .unwrap()
         }
         _ => {
             bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]")
@@ -421,7 +399,7 @@ pub async fn send_binary_shares_to_dealer(
 }
 
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-pub async fn send_prime16_shares_to_dealer(
+pub async fn send_prime16_shares_to_dealer_4party(
     session: &mut Session,
     shares: &Vec<AdditiveSharePrime<PrimeElement<u16>>>,
 ) -> Result<Vec<PrimeElement<u16>>, Error> {
