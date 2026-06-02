@@ -26,12 +26,13 @@ use crate::{
     protocol::{prf::PrfRng, Prf, PrfSeed},
 };
 
-pub async fn extract_msb_rand_additive<T: IntRing2k + NetworkInt, K: PrimInt>(
+pub async fn extract_msb_rand_additive_4party<T: IntRing2k + NetworkInt, K: PrimInt>(
     session: &mut Session,
     x: AdditiveShare<T>,
     offline: &OfflineRandomSharesAdditive4<T, K>,
     prime_modulus: K,
 ) -> Result<AdditiveShare<T>, Error> {
+    dbg!("THIS IS ME", session.own_role().index());
     let mut rng = AesRng::from_random_seed();
     // TODO
     // let prime_modulus_lower_bound = 2 * T::K + 1;
@@ -60,6 +61,8 @@ pub async fn extract_msb_rand_additive<T: IntRing2k + NetworkInt, K: PrimInt>(
     // sample a prf
     let prf_seed = PrfSeed::from([rng.gen::<u8>(); 16]);
     // TODO: compute bitlt using additive shares and prf seed -> output is additive share of bitLT
+
+    dbg!("DO I GET HERE", &session.own_role().index());
     let bit_lt_share_add2 = bitlt(
         session,
         offline.r_bits.clone().into_iter().skip(1).collect(),
@@ -69,7 +72,7 @@ pub async fn extract_msb_rand_additive<T: IntRing2k + NetworkInt, K: PrimInt>(
         prime_modulus,
     )
     .await?;
-
+    dbg!("DO I GET HERE??", &session.own_role().index());
     // step 4: [a']_k = 2^{k-1} [u]_1 + c' - [r']_k, [d]_k = [a]_k - [a']_k
 
     // 4a. computing scaled 2^{k - 1} * [u]_1
@@ -114,6 +117,7 @@ pub async fn bitlt<T: IntRing2k + NetworkInt, K: PrimInt>(
     prf_seed: PrfSeed,
     prime_modulus: K,
 ) -> Result<AdditiveShare<Bit>> {
+    dbg!("HELLO MY NAME IS PARTY", session.own_role().index());
     // Scale the public value to avoid leakage to dealer if the private and public values are equal.
     // I.e., scaled = 2 * public_value + 1
     let scaled_public_value_bits: Vec<bool> = (0..public_value_bits)
@@ -123,10 +127,16 @@ pub async fn bitlt<T: IntRing2k + NetworkInt, K: PrimInt>(
         .collect();
 
     let mut scaled_shares = shares.clone();
-    let mut rng_rand_bits = if session.own_role().index() == 0 || session.own_role().index() == 1 {
+    let mut rng_rand_bits = if session.own_role().index() == 0
+        || session.own_role().index() == 1
+        || session.own_role().index() == 2
+        || session.own_role().index() == 3
+    {
         // Set up shared PRF between parties 1 and 2
+        dbg!("DO I GET HERE??", &session.own_role().index());
         let shared_seed =
             setup_shared_seed_dealer_model_4party(&mut session.network_session, prf_seed).await?;
+        dbg!("DO I GET HERE???", &session.own_role().index());
         let mut rng = PrfRng::from_seed(Prf::expand_seed(shared_seed));
         // Scale private value to avoid leakage to dealer if the private and public values are equal
         // I.e., scaled = 2 * shares
@@ -158,7 +168,9 @@ pub async fn bitlt<T: IntRing2k + NetworkInt, K: PrimInt>(
     };
 
     // Communication round 1: Send shares to dealer to convert to prime field
+    dbg!("DO I GET HERE????", &session.own_role().index());
     let dealer_shares = send_binary_shares_to_dealer_4party(session, &scaled_shares).await?;
+    dbg!("DO I GET HERE?????", &session.own_role().index());
     // Communication round 2: Receive prime field shares from dealer
     let mut prime_shares_received =
         bin_to_primefield16_4party(session, dealer_shares, prime_modulus.to_u16().unwrap()).await?;
@@ -177,6 +189,7 @@ pub async fn bitlt<T: IntRing2k + NetworkInt, K: PrimInt>(
                     );
                 }
             });
+
         // Prefix sum
         let mut prefix_sum = Vec::with_capacity(prime_shares_received.len());
         let mut running_sum = AdditiveSharePrime::zero(prime_modulus.to_u16().unwrap());
@@ -255,13 +268,15 @@ pub async fn bitlt<T: IntRing2k + NetworkInt, K: PrimInt>(
 
 #[cfg(test)]
 mod tests {
+    use crate::protocol::msb_5pc::extract_msb_rand_additive_4party;
+    use crate::protocol::msb_5pc_offline::generate_offline_random_shares_additive_4party;
     use crate::protocol::msb_preprocessing::{
         add2_to_rep_binary, bitlt, extract_msb_rand_additive, offline_shares_for_role_additive2,
         open_additive_share, open_additive_share_bit, open_additive_share_u8, rep_to_add2,
     };
     use crate::protocol::test_utils::{
-        create_array_sharing_additive, create_single_sharing_additive,
-        create_single_sharing_replicated,
+        create_array_sharing_additive, create_array_sharing_additive_4party,
+        create_single_sharing_additive, create_single_sharing_replicated,
     };
     use crate::protocol::PrfSeed;
     use crate::{
@@ -281,7 +296,7 @@ mod tests {
     async fn test_extract_msb_rand_u32_additive() -> Result<()> {
         let modulus = 67;
         let mut rng = AesRng::from_random_seed();
-        let offline_rng = AesRng::from_random_seed();
+        let mut offline_rng = AesRng::from_random_seed();
         let len = 100usize;
 
         // Random cleartext values + expected MSB bits
@@ -295,28 +310,39 @@ mod tests {
             ints, expected
         );
         // Secret-share inputs across 3 parties
-        let shares = create_array_sharing_additive(&mut rng, &ints);
-        let sessions = LocalRuntime::mock_sessions_with_channel().await?;
+        let shares = create_array_sharing_additive_4party(&mut rng, &ints);
+        let sessions = LocalRuntime::mock_sessions_with_channel_n(5).await?;
         let mut jobs = JoinSet::new();
+        let offline_shares =
+            generate_offline_random_shares_additive_4party(&mut offline_rng, modulus)?;
 
         for (i, session) in sessions.into_iter().enumerate() {
             let session = session.clone();
-            let shares_i = VecShareAdditive::new_vec(shares.of_party(i).clone());
-            let mut offline_rng = offline_rng.clone();
+            let shares_i = {
+                if i != 4 {
+                    VecShareAdditive::new_vec(shares.of_party(i).clone())
+                } else {
+                    VecShareAdditive::new_vec(vec![AdditiveShare::zero(); len])
+                }
+            };
+
+            // pick up the pre-generated randomness
+            let offline = offline_shares[i].clone();
 
             jobs.spawn(async move {
                 let mut session = session.lock().await;
-
-                // pick up the pre-generated randomness
-                let offline =
-                    offline_shares_for_role_additive2(&session.own_role(), &mut offline_rng)?;
 
                 // Run extract_msb_rand for each shared input
                 let mut out = Vec::with_capacity(shares_i.len());
                 for x in shares_i.shares().iter().cloned() {
                     out.push(
-                        extract_msb_rand_additive::<u32, u16>(&mut session, x, &offline, modulus)
-                            .await?,
+                        extract_msb_rand_additive_4party::<u32, u16>(
+                            &mut session,
+                            x,
+                            &offline,
+                            modulus,
+                        )
+                        .await?,
                     );
                 }
 
@@ -340,7 +366,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_extract_msb_rand_additive() -> Result<()> {
+    async fn test_extract_msb_rand_additive_4party() -> Result<()> {
         test_extract_msb_rand_u32_additive().await
     }
 

@@ -43,6 +43,21 @@ pub struct OfflineRandomSharesAdditive4<T: IntRing2k, P: PrimInt> {
     pub correlated_bool_prime: Option<Vec<CorrelatedBoolPrimeShare<P>>>,
 }
 
+impl<T: IntRing2k, P: PrimInt> OfflineRandomSharesAdditive4<T, P> {
+    pub fn zero(num_bits: usize) -> Self {
+        let r = AdditiveShare::zero();
+        let r_bits: Vec<AdditiveShare<Bit>> = vec![AdditiveShare::zero(); num_bits];
+        let b_bit_ring = AdditiveShare::zero();
+        let correlated_bool_prime = None;
+        Self {
+            r,
+            r_bits,
+            b_bit_ring,
+            correlated_bool_prime,
+        }
+    }
+}
+
 // helper function: given a tuple of 4 additive shares
 // each party can pick its own share based on its role index
 fn get_additive_share_for_role<T: IntRing2k>(
@@ -73,10 +88,10 @@ fn get_additive_prime_share_for_role<P: PrimInt>(
     }
 }
 
-pub fn generate_offline_random_shares_additive<T: IntRing2k, P: PrimInt>(
+pub fn generate_offline_random_shares_additive_4party<T: IntRing2k, P: PrimInt>(
     rng: &mut impl Rng,
     prime_modulus: P,
-) -> Result<Vec<Option<OfflineRandomSharesAdditive4<T, P>>>, Error>
+) -> Result<Vec<OfflineRandomSharesAdditive4<T, P>>, Error>
 where
     T: IntRing2k,
     P: PrimInt,
@@ -150,7 +165,7 @@ where
 
     // we need to assign the struct for each of the 4 parties, Parties 0, 1, 2, 3
     // note that dealer (party with Role 4) does not receive any randomness
-    let mut shares: Vec<Option<OfflineRandomSharesAdditive4<T, P>>> = Vec::with_capacity(5);
+    let mut shares: Vec<OfflineRandomSharesAdditive4<T, P>> = Vec::with_capacity(5);
     (0..4).for_each(|party_idx| {
         let correlated_shares: Option<Vec<CorrelatedBoolPrimeShare<P>>> = if party_idx == 0 {
             Some(correlated_p0.clone())
@@ -171,18 +186,18 @@ where
 
             correlated_bool_prime: correlated_shares,
         };
-        shares.push(Some(offline));
+        shares.push(offline);
     });
 
     // For the dealer share
-    shares.push(None);
+    shares.push(OfflineRandomSharesAdditive4::zero(T::K));
 
     Ok(shares)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::protocol::msb_5pc_offline::generate_offline_random_shares_additive;
+    use crate::protocol::msb_5pc_offline::generate_offline_random_shares_additive_4party;
     use aes_prng::AesRng;
     use ampc_secret_sharing::IntRing2k;
     use eyre::{Error, Result};
@@ -203,16 +218,16 @@ mod tests {
         let mut rng0 = base_rng.clone();
 
         let offline_shares =
-            generate_offline_random_shares_additive::<u16, u16>(&mut rng0, prime_modulus)?;
+            generate_offline_random_shares_additive_4party::<u16, u16>(&mut rng0, prime_modulus)?;
 
         // Parties 0, 1, 2, 3 generate their shares using the same bulk randomness generation function
-        let p0 = offline_shares[0].as_ref().unwrap();
+        let p0 = offline_shares[0].clone();
 
-        let p1 = offline_shares[1].as_ref().unwrap();
+        let p1 = offline_shares[1].clone();
 
-        let p2 = offline_shares[2].as_ref().unwrap();
+        let p2 = offline_shares[2].clone();
 
-        let p3 = offline_shares[3].as_ref().unwrap();
+        let p3 = offline_shares[3].clone();
 
         // Pick Party 0: check the number of shares in the vectors, should match the log (ring size)
         assert_eq!(p0.r_bits.len(), u16::K);
@@ -278,13 +293,7 @@ mod tests {
                 opened_prime.get_value(),
                 if opened_bool { 1u16 } else { 0u16 }
             );
-
-            // println!("Opened correlated prime {}: bool = {}, prime = {}", idx, opened_bool, opened_prime.get_value());
         }
-
-        let p4 = offline_shares[4].as_ref();
-
-        assert!(p4.is_none());
 
         Ok(())
     }
