@@ -1,7 +1,7 @@
 use crate::{
     execution::{
         player::Role,
-        session::{NetworkSession, Session},
+        session::{NetworkSession, Session, SessionHandles},
     },
     network::value::{NetworkInt, NetworkPrimeInt, NetworkValue},
     protocol::{
@@ -17,11 +17,123 @@ use ampc_secret_sharing::shares::{
 use ampc_secret_sharing::{shares::primefield::PrimeElement, RingElement};
 use ampc_secret_sharing::{shares::share::AdditiveShare, IntRing2k};
 use eyre::{bail, eyre, Error, Result};
-use itertools::multiunzip;
+use itertools::{multiunzip, multizip, Itertools};
 use num_traits::{One, Zero};
 use rand::SeedableRng;
 use std::result::Result::Ok;
 use tracing::instrument;
+
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn open_additive_share_nparty<T: IntRing2k + NetworkInt>(
+    n: usize,
+    session: &mut Session,
+    shares: &[AdditiveShare<T>],
+) -> Result<Vec<T>, Error> {
+    //let own_role = session.own_role().index();
+    let network = &mut session.network_session;
+    let own_role = network.own_role.index();
+    let message = if shares.len() == 1 {
+        T::new_network_element(shares[0].value)
+    } else {
+        T::new_network_vec(
+            shares
+                .iter()
+                .map(|additive_share| additive_share.value)
+                .collect(),
+        )
+    };
+
+    for role_idx in 0..n {
+        if role_idx != own_role {
+            network
+                .send_to_role(Role::new(role_idx), message.clone())
+                .await?;
+        }
+    }
+
+    let mut received_shares = Vec::with_capacity(3);
+    for role_idx in 0..n {
+        if role_idx != own_role {
+            let vals = network
+                .receive_from_role(Role::new(role_idx))
+                .await
+                .and_then(|v| T::into_vec(v))
+                .map_err(|e| eyre!("failed to receive shares from role {}: {:?}", role_idx, e))?;
+            received_shares.push(vals);
+        }
+    }
+
+    shares
+        .iter()
+        .enumerate()
+        .map(|(idx, share)| {
+            let mut acc = share.value;
+            for other_shares in &received_shares {
+                acc += other_shares[idx];
+            }
+            Ok(acc.convert())
+        })
+        .collect()
+}
+
+pub async fn open_additive_share_prime_nparty<T: NetworkPrimeInt>(
+    n: usize,
+    session: &mut Session,
+    shares: &[AdditiveSharePrime<PrimeElement<T>>],
+) -> Result<Vec<PrimeElement<T>>, Error> {
+    let network = &mut session.network_session;
+    let own_role = network.own_role.index();
+
+    let message = if shares.len() == 1 {
+        T::new_network_prime_element(shares[0].value)
+    } else {
+        T::new_network_prime_vec(
+            shares
+                .iter()
+                .map(|additive_share| additive_share.value)
+                .collect(),
+        )
+    };
+
+    for role_idx in 0..n {
+        if role_idx != own_role {
+            network
+                .send_to_role(Role::new(role_idx), message.clone())
+                .await?;
+        }
+    }
+
+    let mut received_shares = Vec::with_capacity(3);
+
+    for role_idx in 0..n {
+        if role_idx != own_role {
+            let vals = network
+                .receive_from_role(Role::new(role_idx))
+                .await
+                .and_then(|v| T::into_prime_vec(v))
+                .map_err(|e| {
+                    eyre!(
+                        "failed to receive prime shares from role {}: {:?}",
+                        role_idx,
+                        e
+                    )
+                })?;
+            received_shares.push(vals);
+        }
+    }
+
+    shares
+        .iter()
+        .enumerate()
+        .map(|(idx, share)| {
+            let mut acc = share.value;
+            for other_shares in &received_shares {
+                acc = acc + other_shares[idx];
+            }
+            Ok(acc)
+        })
+        .collect()
+}
 
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn open_additive_share_4party<T: IntRing2k + NetworkInt>(
@@ -181,7 +293,6 @@ pub async fn bin_to_primefield16_4party(
                 .receive_from_role(Role::new(4))
                 .await
                 .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
-            dbg!("HELOOP", &share_from_dealer);
             if values.len() == 1 {
                 match share_from_dealer {
                     NetworkValue::PrimeElement16(message) => {
@@ -243,8 +354,6 @@ pub async fn bin_to_primefield16_4party(
                         .iter()
                         .map(|x| NetworkValue::PrimeElement16(x.value))
                         .collect::<Vec<_>>();
-                    dbg!("do we do thisss");
-                    dbg!(&values);
                     NetworkValue::vec_to_network(values)
                 };
                 network.send_to_role(Role::new(role_idx), message).await?;
@@ -307,6 +416,14 @@ pub async fn primefield16_to_bin_one_hot_4party(
                 };
                 (shares[0], shares[1], shares[2], shares[3])
             }));
+            let hi = multizip((
+                shares_0.clone(),
+                shares_1.clone(),
+                shares_2.clone(),
+                shares_3.clone(),
+            ))
+            .map(|(s0, s1, s2, s3)| s0 + s1 + s2 + s3)
+            .collect_vec();
             for role_idx in 0..4 {
                 let shares = match role_idx {
                     0 => shares_0.clone(),
@@ -362,7 +479,6 @@ pub async fn send_binary_shares_to_dealer_4party(
                     .receive_from_role(Role::new(role_idx))
                     .await
                     .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
-                dbg!("HI MY NAME IS DEALER");
                 let values = if shares.len() == 1 {
                     match share {
                         NetworkValue::RingElementBit(message) => Ok(vec![message]),
@@ -402,7 +518,6 @@ pub async fn send_binary_shares_to_dealer_4party(
             bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]")
         }
     };
-    dbg!("HUHUHUHUHUHU", &values_received);
     Ok(values_received)
 }
 
@@ -442,7 +557,7 @@ pub async fn send_prime16_shares_to_dealer_4party(
                 } else {
                     match NetworkValue::vec_from_network(share) {
                         Ok(v) => {
-                            if matches!(v[0], NetworkValue::RingElementBit(_)) {
+                            if matches!(v[0], NetworkValue::PrimeElement16(_)) {
                                 Ok(v.into_iter()
                                     .map(|x| match x {
                                         NetworkValue::PrimeElement16(message) => message,
